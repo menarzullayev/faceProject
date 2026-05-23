@@ -21,6 +21,6 @@ htmlcov/
 *.db
 *.db-wal
 *.db-shm
-debug_output/
+# debug_output/  ← removed: now tracked in git for demo purposes
 logs/
 *.log

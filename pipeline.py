@@ -324,19 +324,41 @@ class FacePipeline:
         cx_ratio = cx / W
         cy_ratio = cy / H
         img_step6 = img_bgr.copy()
-        
-        # Draw face bounding box outline for reference (Light Gray)
-        cv2.rectangle(img_step6, (int(bbox[0]), int(bbox[1])), (int(bbox[2]), int(bbox[3])), (200, 200, 200), 1)
-        
-        # Draw target central region (Yellow)
-        cv2.rectangle(img_step6, (int(W * self.min_cx_ratio), int(H * self.min_cy_ratio)),
-                      (int(W * self.max_cx_ratio), int(H * self.max_cy_ratio)), (0, 255, 255), 2)
-        
+
+        # --- Guide lines: show 25% and 75% boundaries across full image ---
+        # Vertical guide lines (x-axis limits)
+        cv2.line(img_step6, (int(W * self.min_cx_ratio), 0), (int(W * self.min_cx_ratio), H), (0, 200, 200), 1, cv2.LINE_AA)
+        cv2.line(img_step6, (int(W * self.max_cx_ratio), 0), (int(W * self.max_cx_ratio), H), (0, 200, 200), 1, cv2.LINE_AA)
+        # Horizontal guide lines (y-axis limits)
+        cv2.line(img_step6, (0, int(H * self.min_cy_ratio)), (W, int(H * self.min_cy_ratio)), (0, 200, 200), 1, cv2.LINE_AA)
+        cv2.line(img_step6, (0, int(H * self.max_cy_ratio)), (W, int(H * self.max_cy_ratio)), (0, 200, 200), 1, cv2.LINE_AA)
+
+        # Draw allowed central zone rectangle (Yellow, thick)
+        zone_x1 = int(W * self.min_cx_ratio)
+        zone_y1 = int(H * self.min_cy_ratio)
+        zone_x2 = int(W * self.max_cx_ratio)
+        zone_y2 = int(H * self.max_cy_ratio)
+        cv2.rectangle(img_step6, (zone_x1, zone_y1), (zone_x2, zone_y2), (0, 255, 255), 2, cv2.LINE_AA)
+
+        # Draw face bounding box (Blue, clearly distinct from yellow zone)
+        cv2.rectangle(img_step6, (int(bbox[0]), int(bbox[1])), (int(bbox[2]), int(bbox[3])), (255, 100, 0), 2, cv2.LINE_AA)
+
+        # White crosshair through detected face center
+        cross_size = 18
+        cx_i, cy_i = int(cx), int(cy)
+        cv2.line(img_step6, (cx_i - cross_size, cy_i), (cx_i + cross_size, cy_i), (255, 255, 255), 2, cv2.LINE_AA)
+        cv2.line(img_step6, (cx_i, cy_i - cross_size), (cx_i, cy_i + cross_size), (255, 255, 255), 2, cv2.LINE_AA)
+
+        # Center dot (Green if inside zone, Red if outside)
         is_centered = (self.min_cx_ratio <= cx_ratio <= self.max_cx_ratio) and (self.min_cy_ratio <= cy_ratio <= self.max_cy_ratio)
         color_center = (0, 255, 0) if is_centered else (0, 0, 255)
-        cv2.circle(img_step6, (int(cx), int(cy)), 6, color_center, -1)
-        cv2.putText(img_step6, f"Center: ({cx_ratio:.2f}, {cy_ratio:.2f})", (int(bbox[0]), int(bbox[1]) - 10),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, color_center, 2)
+        cv2.circle(img_step6, (cx_i, cy_i), 7, color_center, -1, cv2.LINE_AA)
+        cv2.circle(img_step6, (cx_i, cy_i), 7, (255, 255, 255), 1, cv2.LINE_AA)  # white border
+
+        # Label
+        label = f"Center: ({cx_ratio:.2f}, {cy_ratio:.2f})  {'OK' if is_centered else 'FAIL'}"
+        cv2.putText(img_step6, label, (10, 28), cv2.FONT_HERSHEY_SIMPLEX, 0.65, color_center, 2, cv2.LINE_AA)
+
         cv2.imwrite(os.path.join(debug_dir, "06_centrality_check.jpg"), img_step6)
         if not is_centered:
             raise ValueError(f"Face is not centered (cx={cx_ratio:.2f}, cy={cy_ratio:.2f}). Bounding box center must be within central area.")
