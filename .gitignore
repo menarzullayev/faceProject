@@ -14,10 +14,8 @@ htmlcov/
 *.swp
 *.swo
 
-# ── Large Binary Files & Models (Exceeds GitHub size limits) ──────────────────
-models/
-*.onnx
-*.bin
+# ── Large Binary Files & Models (Git LFS) ──────────────────
+# Managed via Git LFS to support files > 100MB
 
 # ── Databases & Temporary Artifacts ───────────────────────────────────────────
 *.db
