@@ -1,0 +1,28 @@
+# ── Python Cache ──────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.coverage
+htmlcov/
+
+# ── Local Configurations (Confidential) ───────────────────────────────────────
+.env
+.env*.local
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# ── Large Binary Files & Models (Exceeds GitHub size limits) ──────────────────
+models/
+*.onnx
+*.bin
+
+# ── Databases & Temporary Artifacts ───────────────────────────────────────────
+*.db
+*.db-wal
+*.db-shm
+debug_output/
+logs/
+*.log
