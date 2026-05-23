@@ -164,7 +164,7 @@ class FacePipeline:
         Returns L2-normalized 512-dim float32 vector.
         """
         blob = cv2.dnn.blobFromImage(
-            face_bgr, 1.0 / 128.0, (ARCFACE_INPUT_SIZE, ARCFACE_INPUT_SIZE),
+            face_bgr, 1.0 / 127.5, (ARCFACE_INPUT_SIZE, ARCFACE_INPUT_SIZE),
             (127.5, 127.5, 127.5), swapRB=True
         )
         raw = self.arcface.run(None, {self._arc_input_name: blob})[0][0]
