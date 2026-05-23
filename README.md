@@ -122,7 +122,7 @@ Yuz tasvirini yuborib, bazadagi barcha xodimlar ichidan eng mosini topish.
     {
       "recognized": true,
       "person_id": 15,
-      "name": "Saidakbar",
+      "name": "Ali Karimov",
       "similarity_score": 0.896295,
       "threshold": 0.35
     }
@@ -144,20 +144,20 @@ Yuz tasvirini yuborib, bazadagi barcha xodimlar ichidan eng mosini topish.
 *   **So'rov yuborish (Bir nechta rasm yuborish imkoniyati bilan):**
     ```bash
     curl -X POST http://localhost:8000/enroll \
-      -F "name=Sirojiddin Narzullayev" \
-      -F "photos=@sirojiddin_clear.jpg" \
-      -F "photos=@sirojiddin_group.jpg"
+      -F "name=Vali Toshmatov" \
+      -F "photos=@employee_clear.jpg" \
+      -F "photos=@employee_group.jpg"
     ```
 *   **Javob (Rad etilgan rasmlar tafsiloti bilan):**
     ```json
     {
       "person_id": 18,
-      "name": "Sirojiddin Narzullayev",
+      "name": "Vali Toshmatov",
       "photos_processed": 1,
       "photos_failed": 1,
       "embed_count": 1,
       "failed_files": [
-        "sirojiddin_group.jpg: ValueError('Multiple faces detected (3), only 1 face allowed per photo')"
+        "employee_group.jpg: ValueError('Multiple faces detected (3), only 1 face allowed per photo')"
       ]
     }
     ```
@@ -241,7 +241,7 @@ Tizimga yuklanayotgan yuz rasmini har bir bosqich bo'yicha to'liq tahlil qilish 
 
 ### Skriptni ishga tushirish:
 ```bash
-# default Saidakbar passport rasmi bilan tekshirish:
+# default test rasmi bilan tekshirish:
 ./debug_pipeline.py
 
 # Istalgan rasm bilan tekshirish:
