@@ -71,7 +71,8 @@ def _find_models(models_dir: str) -> dict:
         n = os.path.basename(f).lower()
         if "scrfd" in n and "scrfd" not in found:
             found["scrfd"] = f
-        elif any(k in n for k in ("mbf", "w600k", "arcface", "r50", "r100")) \
+        elif any(k in n for k in ("mbf", "w600k", "arcface", "r50", "r100",
+                                      "buffalo", "antelope")) \
                 and "arcface" not in found:
             found["arcface"] = f
         elif any(k in n for k in ("crfiqa", "quality", "fiqa")) \
