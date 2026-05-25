@@ -1,51 +1,34 @@
 #!/usr/bin/env python3
 """
-face_embed.py — Rasmdan 512-o'lchamli ArcFace embedding ajratadi.
+face_embed.py — Extract a 512-dim ArcFace embedding from a single photo.
 
-Modellar: skript yonidagi models/ papkasidan avtomatik topiladi.
+Models are auto-detected from the models/ directory next to this script.
 
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-FUNKSIYA sifatida (web backend import qiladi):
-
+Usage:
     from face_embed import extract_embedding
 
-    result = extract_embedding("photo.jpg")
+    result = extract_embedding("photo.jpg")   # file path
+    result = extract_embedding(image_bytes)   # raw bytes from HTTP upload
 
     if result["ok"]:
-        embedding = result["embedding"]   # list[float], 512 ta
+        embedding = result["embedding"]   # list[float], 512 values
         quality   = result["quality"]     # float, 0.0 – 1.0
     else:
-        error = result["error"]           # str, sabab
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-CLI sifatida (subprocess orqali):
-
-    python3 face_embed.py photo.jpg
-
-    # Muvaffaqiyat (stdout):
-    # {"ok": true, "embedding": [0.021, -0.043, ...], "quality": 0.724}
-
-    # Xato (stdout):
-    # {"ok": false, "error": "No face detected in image"}
-
-    Exit code: 0 = muvaffaqiyat, 1 = xato
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+        error = result["error"]           # str, reason
 """
 
 import glob
-import json
 import os
-import sys
 
 import cv2
 import numpy as np
 import onnxruntime as ort
 from skimage.transform import SimilarityTransform
 
-# ── Model yo'llari (skript yonidagi models/ dan avtomatik topiladi) ───────────
+# ── Model paths (auto-detected from models/ directory next to this script) ────
 _MODELS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "models")
 
-# ── ArcFace 5-nuqtali standart shablon (112×112) ─────────────────────────────
+# ── ArcFace standard 5-point reference template (112×112) ────────────────────
 _ARCFACE_DST = np.array([
     [38.2946, 51.6963],
     [73.5318, 51.5014],
@@ -54,25 +37,25 @@ _ARCFACE_DST = np.array([
     [70.7299, 92.2041],
 ], dtype=np.float32)
 
-# ── Guard chegaralari ─────────────────────────────────────────────────────────
-_MIN_FACE_SIZE    = 80      # px — yuzning minimal eni/bo'yi
-_MIN_CX_RATIO     = 0.25    # yuz markazi x koordinatasi (rasmga nisbatan)
+# ── Guard thresholds ──────────────────────────────────────────────────────────
+_MIN_FACE_SIZE    = 80      # px — minimum face width and height
+_MIN_CX_RATIO     = 0.25    # face center x ratio relative to image width
 _MAX_CX_RATIO     = 0.75
-_MIN_CY_RATIO     = 0.25    # yuz markazi y koordinatasi
+_MIN_CY_RATIO     = 0.25    # face center y ratio relative to image height
 _MAX_CY_RATIO     = 0.75
-_MIN_YAW_RATIO    = 0.5     # chapga/o'ngga burilish simmetriyasi
+_MIN_YAW_RATIO    = 0.5     # left/right turn symmetry ratio
 _MAX_YAW_RATIO    = 2.0
-_MIN_PITCH_RATIO  = 0.4     # tepaga/pastga egilish simmetriyasi
+_MIN_PITCH_RATIO  = 0.4     # up/down tilt symmetry ratio
 _MAX_PITCH_RATIO  = 1.8
-_MIN_QUALITY      = 0.15    # CR-FIQA minimal sifat bahosi
+_MIN_QUALITY      = 0.15    # CR-FIQA minimum quality score
 
-# SCRFD / ArcFace inference parametrlari
+# SCRFD / ArcFace inference parameters
 _SCRFD_SIZE         = 640
 _ARCFACE_SIZE       = 112
 _DETECT_THRESHOLD   = 0.30
 _NMS_THRESHOLD      = 0.40
 
-# ── Global model cache (bir marta yuklanadi) ──────────────────────────────────
+# ── Global model cache (loaded once, reused on subsequent calls) ──────────────
 _scrfd   = None
 _arcface = None
 _crfiqa  = None
@@ -82,7 +65,7 @@ _crfiqa_input  = None
 
 
 def _find_models(models_dir: str) -> dict:
-    """models/ papkasidagi ONNX fayllarni fayl nomi bo'yicha topadi."""
+    """Locate ONNX models in models/ directory by filename pattern."""
     found = {}
     for f in sorted(glob.glob(os.path.join(models_dir, "*.onnx"))):
         n = os.path.basename(f).lower()
@@ -98,12 +81,12 @@ def _find_models(models_dir: str) -> dict:
 
 
 def _load_models():
-    """Modellarni bir marta yuklab global o'zgaruvchilarga saqlaydi."""
+    """Load models once into global variables; subsequent calls are no-ops."""
     global _scrfd, _arcface, _crfiqa
     global _scrfd_input, _arcface_input, _crfiqa_input
 
     if _scrfd is not None:
-        return  # allaqachon yuklangan
+        return  # already loaded
 
     models = _find_models(_MODELS_DIR)
     providers = ["CPUExecutionProvider"]
@@ -111,8 +94,8 @@ def _load_models():
     for key in ("scrfd", "arcface"):
         if key not in models:
             raise RuntimeError(
-                f"'{key}' modeli topilmadi: {_MODELS_DIR}/\n"
-                f"  Kutilayotgan fayllar: scrfd*.onnx, w600k*.onnx"
+                f"'{key}' model not found in: {_MODELS_DIR}/\n"
+                f"  Expected files: scrfd*.onnx, w600k*.onnx"
             )
 
     _scrfd   = ort.InferenceSession(models["scrfd"],   providers=providers)
@@ -125,10 +108,10 @@ def _load_models():
         _crfiqa_input = _crfiqa.get_inputs()[0].name
 
 
-# ── Yuz aniqlash (SCRFD) ──────────────────────────────────────────────────────
+# ── Face detection (SCRFD) ────────────────────────────────────────────────────
 
 def _letterbox(img: np.ndarray) -> tuple:
-    """Rasmni SCRFD uchun 640×640 ga letterbox qiladi (top-left padding)."""
+    """Resize image to 640×640 with top-left letterbox padding for SCRFD input."""
     h, w = img.shape[:2]
     ratio = float(h) / w
     if ratio > 1.0:
@@ -144,8 +127,8 @@ def _letterbox(img: np.ndarray) -> tuple:
 
 def _detect(img_bgr: np.ndarray) -> list:
     """
-    SCRFD yuz aniqlovchi. NMS qo'llaydi, score bo'yicha tartiblaydi.
-    Qaytaradi: [{"bbox": [x1,y1,x2,y2], "kps5": ndarray(5,2), "score": float}]
+    Run SCRFD face detector. Applies NMS and sorts results by score descending.
+    Returns: [{"bbox": [x1,y1,x2,y2], "kps5": ndarray(5,2), "score": float}]
     """
     h, w = img_bgr.shape[:2]
     lb, scale = _letterbox(img_bgr)
@@ -197,10 +180,10 @@ def _detect(img_bgr: np.ndarray) -> list:
     return results
 
 
-# ── Hizalash (Umeyama) ────────────────────────────────────────────────────────
+# ── Face alignment (Umeyama) ──────────────────────────────────────────────────
 
 def _align(img_bgr: np.ndarray, kps5: np.ndarray) -> np.ndarray:
-    """Umeyama o'xshashlik transformatsiyasi → 112×112 BGR yuz chipi."""
+    """Apply Umeyama similarity transform to produce a 112×112 aligned face chip."""
     tform = SimilarityTransform()
     tform.estimate(kps5, _ARCFACE_DST)
     return cv2.warpAffine(img_bgr, tform.params[:2],
@@ -211,7 +194,7 @@ def _align(img_bgr: np.ndarray, kps5: np.ndarray) -> np.ndarray:
 # ── Embedding (ArcFace) ───────────────────────────────────────────────────────
 
 def _embed(face_bgr: np.ndarray) -> np.ndarray:
-    """ArcFace: 112×112 BGR → L2-normallashtirilgan 512-dim float32 vektor."""
+    """ArcFace: 112×112 BGR → L2-normalized 512-dim float32 embedding vector."""
     blob = cv2.dnn.blobFromImage(
         face_bgr, 1.0 / 127.5, (_ARCFACE_SIZE, _ARCFACE_SIZE),
         (127.5, 127.5, 127.5), swapRB=True,
@@ -221,10 +204,10 @@ def _embed(face_bgr: np.ndarray) -> np.ndarray:
     return (raw / norm).astype(np.float32) if norm > 1e-9 else raw.astype(np.float32)
 
 
-# ── Sifat bahosi (CR-FIQA) ────────────────────────────────────────────────────
+# ── Biometric quality score (CR-FIQA) ────────────────────────────────────────
 
 def _quality(face_bgr: np.ndarray) -> float:
-    """CR-FIQA sifat bahosi (0.0 – 1.0). Model yo'q bo'lsa 1.0 qaytaradi."""
+    """Return CR-FIQA quality score (0.0–1.0). Returns 1.0 if model is not loaded."""
     if _crfiqa is None:
         return 1.0
     blob = cv2.dnn.blobFromImage(
@@ -235,46 +218,46 @@ def _quality(face_bgr: np.ndarray) -> float:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# ASOSIY FUNKSIYA — web team ishlatadigan yagona interfeys
+# PUBLIC API — the only function the web backend needs
 # ══════════════════════════════════════════════════════════════════════════════
 
 def extract_embedding(image_source) -> dict:
     """
-    Rasmdan 512-o'lchamli ArcFace embedding ajratadi.
+    Extract a 512-dim ArcFace embedding from a single face photo.
 
-    Parametr:
-        image_source : str  — fayl yo'li  ("photo.jpg")
-                     | bytes — xom baytlar (HTTP upload dan)
+    Args:
+        image_source : str   — file path ("photo.jpg")
+                     | bytes — raw bytes from an HTTP upload
 
-    Qaytaradi (dict):
-        Muvaffaqiyat:
+    Returns:
+        On success:
             {
                 "ok"       : True,
-                "embedding": [float, ...],  # 512 ta, L2-normallashtirilgan
-                "quality"  : float          # CR-FIQA bahosi, 0.0 – 1.0
+                "embedding": [float, ...],  # 512 values, L2-normalized
+                "quality"  : float          # CR-FIQA score, 0.0 – 1.0
             }
-        Xato:
+        On failure:
             {
                 "ok"   : False,
-                "error": str    # sabab (inglizcha, logging uchun qulay)
+                "error": str    # human-readable reason
             }
 
-    Xatolar (ok=False bo'lishi mumkin bo'lgan holatlar):
-        - Rasm o'qilmadi
-        - Yuz topilmadi
-        - Bir nechta yuz topildi
-        - Yuz juda kichik (< 80px)
-        - Yuz markazda emas
-        - Bosh juda ko'p burilgan (yaw / pitch)
-        - CR-FIQA sifat bahosi juda past (< 0.15)
+    Possible failure reasons (ok=False):
+        - Image could not be read
+        - No face detected
+        - Multiple faces detected
+        - Face too small (< 80px)
+        - Face not centered in the frame
+        - Head rotated too far (yaw / pitch out of range)
+        - CR-FIQA quality score too low (< 0.15)
     """
-    # Modellarni yuklash (birinchi chaqiruvda)
+    # Load models on first call (no-op on subsequent calls)
     try:
         _load_models()
     except RuntimeError as e:
         return {"ok": False, "error": str(e)}
 
-    # Rasmni o'qish
+    # Decode image
     try:
         if isinstance(image_source, (bytes, bytearray)):
             arr = np.frombuffer(image_source, dtype=np.uint8)
@@ -289,7 +272,7 @@ def extract_embedding(image_source) -> dict:
 
     H, W = img.shape[:2]
 
-    # ── Yuz aniqlash ─────────────────────────────────────────────────────────
+    # ── Face detection ────────────────────────────────────────────────────────
     try:
         faces = _detect(img)
     except Exception as e:
@@ -306,7 +289,7 @@ def extract_embedding(image_source) -> dict:
     bbox = face["bbox"]
     kps5 = face["kps5"]
 
-    # ── Guard 1: Yuz o'lchami ─────────────────────────────────────────────────
+    # ── Guard 1: Face size ────────────────────────────────────────────────────
     fw = bbox[2] - bbox[0]
     fh = bbox[3] - bbox[1]
     if fw < _MIN_FACE_SIZE or fh < _MIN_FACE_SIZE:
@@ -314,7 +297,7 @@ def extract_embedding(image_source) -> dict:
                 "error": f"Face too small ({int(fw)}x{int(fh)}px), "
                          f"minimum is {_MIN_FACE_SIZE}x{_MIN_FACE_SIZE}px"}
 
-    # ── Guard 2: Markaziylik ──────────────────────────────────────────────────
+    # ── Guard 2: Face centrality ──────────────────────────────────────────────
     cx_r = ((bbox[0] + bbox[2]) / 2.0) / W
     cy_r = ((bbox[1] + bbox[3]) / 2.0) / H
     if not (_MIN_CX_RATIO <= cx_r <= _MAX_CX_RATIO
@@ -323,7 +306,7 @@ def extract_embedding(image_source) -> dict:
                 "error": f"Face not centered (cx={cx_r:.2f}, cy={cy_r:.2f}), "
                          f"expected center within 0.25–0.75 of image"}
 
-    # ── Guard 3: Yaw (chapga/o'ngga burilish) ────────────────────────────────
+    # ── Guard 3: Yaw (left/right rotation) ───────────────────────────────────
     d_left  = np.linalg.norm(kps5[2] - kps5[0])
     d_right = np.linalg.norm(kps5[2] - kps5[1])
     yaw     = max(d_left, 1e-5) / max(d_right, 1e-5)
@@ -332,7 +315,7 @@ def extract_embedding(image_source) -> dict:
                 "error": f"Face turned too far sideways (yaw ratio={yaw:.2f}), "
                          f"please look directly at camera"}
 
-    # ── Guard 4: Pitch (tepaga/pastga egilish) ────────────────────────────────
+    # ── Guard 4: Pitch (up/down tilt) ────────────────────────────────────────
     eye_mid   = (kps5[0] + kps5[1]) / 2.0
     mouth_mid = (kps5[3] + kps5[4]) / 2.0
     pitch     = (max(np.linalg.norm(kps5[2] - eye_mid),   1e-5)
@@ -342,13 +325,13 @@ def extract_embedding(image_source) -> dict:
                 "error": f"Face tilted too far up/down (pitch ratio={pitch:.2f}), "
                          f"please keep face level"}
 
-    # ── Hizalash → 112×112 ────────────────────────────────────────────────────
+    # ── Alignment → 112×112 ──────────────────────────────────────────────────
     try:
         aligned = _align(img, kps5)
     except Exception as e:
         return {"ok": False, "error": f"Alignment error: {e}"}
 
-    # ── Guard 5: CR-FIQA sifat bahosi ─────────────────────────────────────────
+    # ── Guard 5: CR-FIQA quality score ────────────────────────────────────────
     try:
         q = _quality(aligned)
     except Exception as e:
@@ -367,18 +350,8 @@ def extract_embedding(image_source) -> dict:
 
     return {
         "ok":        True,
-        "embedding": emb.tolist(),   # list[float], 512 ta
+        "embedding": emb.tolist(),   # list[float], 512 values
         "quality":   round(q, 6),
     }
 
 
-# ── CLI ───────────────────────────────────────────────────────────────────────
-
-if __name__ == "__main__":
-    if len(sys.argv) != 2:
-        print('Usage: python3 face_embed.py <image_path>', file=sys.stderr)
-        sys.exit(1)
-
-    result = extract_embedding(sys.argv[1])
-    print(json.dumps(result, ensure_ascii=False))
-    sys.exit(0 if result["ok"] else 1)
