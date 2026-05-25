@@ -1,14 +1,15 @@
-# 🚀 Face Enrollment & Recognition Service
+# 🚀 Face Enrollment & Database Builder
 
-Xodimlarni biometrik ro'yxatdan o'tkazish (Enrollment), tasvirlar sifatini ko'p bosqichli tekshirish (Biometric Guards), mos keluvchi `employee.db` ma'lumotlar bazasini yaratish hamda serverda 1-to-N yuz tanish (Identification) uchun mo'ljallangan yuqori samarali backend servis.
+Xodimlarni biometrik ro'yxatdan o'tkazish (Enrollment), tasvirlar sifatini ko'p bosqichli
+tekshirish (Biometric Guards) va **Ambarella CV25 Cavalry NPU** bilan 100% mutanosib
+`employee.db` ma'lumotlar bazasini yaratish uchun mo'ljallangan Python skripti.
 
-Ushbu backend **Ambarella CV25 Cavalry NPU** chipidagi kamera dasturiy ta'minoti bilan **100% mutanosib** qilib ishlab chiqilgan bo'lib, biometrik xavfsizlikni maksimal darajaga ko'taradi.
+Web backend ushbu skriptni `subprocess` orqali chaqiradi — hech qanday server
+yoki API kerak emas.
 
 ---
 
 ## 📊 Tizim Arxitekturasi (Pipeline)
-
-Quyidagi oqim diagrammasida rasm yuklanishidan tortib to bazaga yozilguniga qadar bo'lgan to'liq zanjir keltirilgan:
 
 ```mermaid
 graph TD
@@ -31,7 +32,7 @@ graph TD
     Guards -- Har qanday cheklov buzilsa --> Err3["Reject: Validation Error"]
     Guards -- Barcha filtrlar tasdiqlansa --> F["Umeyama Alignment (112x112)"]
     
-    F --> G["ArcFace ResNet-50 Embedding (/128.0)"]
+    F --> G["ArcFace MBF Embedding (/ 127.5)"]
     G --> H["L2-Normalization"]
     H --> I[("SQLite employee.db")]
     I --> J["Deployment: Ambarella CV25 NPU"]
@@ -39,225 +40,208 @@ graph TD
 
 ---
 
-## ⚡️ Ishlash Tezligi va RAM Analizi (1-to-N Benchmark)
-
-Agarda korxonada **10,000 nafar xodim** bo'lsa va har birining **5 tadan yuz vektori (jami 50,000 ta embedding)** bazada saqlansa:
-
-### 1. ⏱ Solishtirish tezligi (1-to-N Search Time)
-*   **Vektor o'lchami:** 512 ta float32 elementdan iborat.
-*   **Matematik jarayon:** Kiruvchi test yuzning embedding vektori bazadagi barcha $50,000$ ta vektorlar bilan **Matrix Multiplication (Dot Product)** qilinadi (vektorlar L2 normalizatsiya qilinganligi bois, Dot Product to'g'ridan-to'g'ri **Cosine Similarity** ga teng).
-*   **Serverda (Python + NumPy):** NumPy kutubxonasining BLAS optimizatsiyalari (masalan, Intel MKL/OpenBLAS) tufayli $1 \times 512$ va $512 \times 50000$ matritsalarni ko'paytirish **atigi 1.5 - 3.0 millisekund** vaqt oladi.
-*   **Kamerada (Ambarella CV25 NPU):** Agar barcha vektorlar kameraning tezkor xotirasida (RAM) saqlansa, sequential yoki batch dot-product hisoblash **5 - 10 millisekund**dan oshmaydi.
-
-### 2. 💾 RAM iste'moli (RAM Occupancy)
-Vektorlarni xotiraga (RAM) to'liq yuklab olish quyidagicha hajm talab etadi:
-$$\text{Hajm} = 50,000 \text{ ta vektor} \times 512 \text{ float32} \times 4 \text{ bayt} = 102,400,000 \text{ bayt} \approx 97.66 \text{ MB}$$
-
-SQLite metadata va indekslari, Python ob'ektlari strukturasini hisobga olganda ham jami RAM iste'moli **110 MB atrofida** bo'ladi. Bu ko'rsatkich Ambarella CV25 kabi cheklangan resursli tizimlar uchun ham juda kichik va xavfsizdir.
-
----
-
 ## ⚙️ Model va Normalizatsiya Mutanosibligi
 
-*   **Detektor:** `scrfd_10g_bnkps.onnx` (InsightFace-ning keypoints taqdim etuvchi eng kuchli 10G modeli, `640x640` input o'lchamli letterbox qo'llaniladi).
-*   **Tanib oluvchi (Recognition):** `w600k_mbf.onnx` (ArcFace MobileFaceNet backbone).
-*   **Normalizatsiya koeffitsiyenti:** `/ 128.0` standard.
-    > [!IMPORTANT]
-    > Ambarella Cavalry NPU modeli tasvirlarni `/128.0` koeffitsiyenti bo'yicha normalizatsiya qiladi. Python backendda ko'plab kutubxonalar sukut bo'yicha `/127.5` dan foydalanadi. Tizimda bu qiymat `/128.0` ga moslashtirildi, natijada server va kamera vektorlari orasidagi o'xshashlik **0.999998** ga yetib, absolute sinxronlik ta'minlandi.
+| Model | Fayl | Input | Maqsad |
+|---|---|---|---|
+| **SCRFD 10G** | `scrfd_10g_bnkps.onnx` | 640×640, `/128.0` | Yuz topish + 5 keypoint |
+| **ArcFace MBF** | `w600k_mbf.onnx` | 112×112, `/127.5` | 512-dim embedding |
+| **CR-FIQA** | `crfiqa_s_quality_opset11.onnx` | 112×112, `/128.0` | Biometrik sifat bahosi |
+
+> [!IMPORTANT]
+> Uchala ONNX fayl `models/` papkasida bo'lishi shart — skript ularni
+> fayl nomi bo'yicha **avtomatik topadi**, yo'l ko'rsatish shart emas.
 
 ---
 
-## 🛡 Biometrik Cheklovlar va Himoya Qoidalari (Guards)
+## 🛡 Biometrik Cheklovlar (Guards)
 
-Tizim bazasiga sifatsiz yoki aldovchi (spoofing) rasmlar kirishining oldini olish maqsadida quyidagi **dinamik parametrli guards** integratsiya qilingan:
-
-| # | Cheklov Nomi | Parametr | Default Qiymat | Tavsif |
-|---|---|---|---|---|
-| 1 | **Face Size Filter** | `min_face_size` | `80` px | Yuzning eni va bo'yi minimal o'lchami. Kichik va uzoqdan olingan yuzlarni rad etadi. |
-| 2 | **Face Centrality** | `min_cx/y_ratio`, `max_cx/y_ratio` | `0.25 - 0.75` | Yuz ramkaning markazida joylashishi shart. Burchakda qolib ketgan tasvirlar rad etiladi. |
-| 3 | **Yaw Pose Limit** | `min/max_yaw_ratio` | `0.5 - 2.0` | Yuzning o'ngga/chapga burilish simmetriyasi. Keypointlar nisbati buzilganda rad etiladi. |
-| 4 | **Pitch Pose Limit** | `min/max_pitch_ratio` | `0.4 - 1.8` | Yuzning tepaga/pastga egilish simmetriyasi. Portret darajasidan yuqori og'ishlarni cheklaydi. |
-| 5 | **CR-FIQA Score** | `min_quality_score` | `0.15` | Certainty Ratio Face Image Quality Assessment orqali biometrik aniqlik va yoritilganlik sifati. |
-| 6 | **Multi-Face Reject** | `max_faces` | `1` | Rasmda bittadan ko'p odam bo'lsa rad etiladi (baza chalkashligining oldini olish uchun). |
+| # | Cheklov | Default | Tavsif |
+|---|---|---|---|
+| 1 | **Face Size** | `>= 80 px` | Kichik va uzoqdagi yuzlarni rad etadi |
+| 2 | **Face Centrality** | `0.25 – 0.75` | Yuz ramkaning markazida bo'lishi shart |
+| 3 | **Yaw Pose** | `0.5 – 2.0` | Chapga/o'ngga burilishni cheklaydi |
+| 4 | **Pitch Pose** | `0.4 – 1.8` | Tepaga/pastga egilishni cheklaydi |
+| 5 | **CR-FIQA Score** | `>= 0.15` | Biometrik aniqlik va yoritilganlik sifati |
+| 6 | **Multi-Face Reject** | `max 1` | Bir rasmda bir nechta odam — rad etiladi |
 
 ---
 
-## 📡 API Endpointlar
+## 🛠 O'rnatish
 
-Backend ishga tushgach, to'liq interaktiv hujjatlar va test paneli quyidagi manzilda ochiladi:
-👉 **[http://localhost:8000/docs](http://localhost:8000/docs)** (Swagger UI)
-
-### 1. Dinamik Sozlamalar (`GET` va `POST /config`)
-
-Ushbu endpointlar orqali tizim cheklovlarini serverni o'chirmasdan, real-vaqt rejimida boshqarish mumkin.
-
-*   **Joriy sozlamalarni olish:**
-    ```bash
-    curl -X GET http://localhost:8000/config
-    ```
-*   **Yangi qiymatlarni o'rnatish:**
-    ```bash
-    curl -X POST http://localhost:8000/config \
-      -H "Content-Type: application/json" \
-      -d '{
-        "min_face_size": 100,
-        "min_quality_score": 0.20,
-        "similarity_threshold": 0.38
-      }'
-    ```
-
----
-
-### 2. 1-to-N Shaxsni Aniqlash (`POST /identify`)
-
-Yuz tasvirini yuborib, bazadagi barcha xodimlar ichidan eng mosini topish.
-
-*   **So'rov yuborish:**
-    ```bash
-    curl -X POST http://localhost:8000/identify \
-      -F "photo=@test_person.jpg"
-    ```
-*   **Tizim xodimni aniqlagan holatda (Similarity >= `similarity_threshold`):**
-    ```json
-    {
-      "recognized": true,
-      "person_id": 15,
-      "name": "Ali Karimov",
-      "similarity_score": 0.896295,
-      "threshold": 0.35
-    }
-    ```
-*   **Tizim tanimagan yoki o'xshashlik past bo'lgan holatda (Similarity < `threshold`):**
-    ```json
-    {
-      "recognized": false,
-      "similarity_score": 0.214051,
-      "threshold": 0.35,
-      "message": "Best match score (0.2141) is below threshold (0.35)"
-    }
-    ```
-
----
-
-### 3. Yangi Xodimni Ro'yxatdan O'tkazish (`POST /enroll`)
-
-*   **So'rov yuborish (Bir nechta rasm yuborish imkoniyati bilan):**
-    ```bash
-    curl -X POST http://localhost:8000/enroll \
-      -F "name=Vali Toshmatov" \
-      -F "photos=@employee_clear.jpg" \
-      -F "photos=@employee_group.jpg"
-    ```
-*   **Javob (Rad etilgan rasmlar tafsiloti bilan):**
-    ```json
-    {
-      "person_id": 18,
-      "name": "Vali Toshmatov",
-      "photos_processed": 1,
-      "photos_failed": 1,
-      "embed_count": 1,
-      "failed_files": [
-        "employee_group.jpg: ValueError('Multiple faces detected (3), only 1 face allowed per photo')"
-      ]
-    }
-    ```
-
----
-
-### 4. Bazani Yuklab Olish (`GET /database/export`)
-
-Kamera dasturi uchun to'liq mos keladigan `employee.db` faylini yuklab olish.
 ```bash
-curl http://localhost:8000/database/export -o employee.db
-```
-
----
-
-## 🛠 O'rnatish va Ishga Tushirish
-
-### 1. Muhitni sozlash va bog'liqliklarni o'rnatish
-```bash
-cd enrollment_service
+cd faceProject
 python3 -m venv venv
 source venv/bin/activate
 pip install -r requirements.txt
 ```
 
-### 2. Environment o'zgaruvchilarini sozlash (.env orqali)
+**Kerakli paketlar:**
 
-Model yo'llari va ma'lumotlar bazasi manzilini sozlash uchun `.env` faylidan foydalanish tavsiya etiladi:
-
-```bash
-# 1. Shablondan nusxa oling:
-cp .env.example .env
-
-# 2. .env faylini o'zingizning tizimingizga moslab tahrirlang.
 ```
-
-Agarda o'zgaruvchilarni terminalda vaqtincha eksport qilmoqchi bo'lsangiz:
-```bash
-export SCRFD_MODEL="/home/nsn/Workspace/Embedding_AI/enrollment_service/models/scrfd_10g_bnkps.onnx"
-export ARCFACE_MODEL="/home/nsn/Workspace/Embedding_AI/enrollment_service/models/w600k_mbf.onnx"
-export CRFIQA_MODEL="/home/nsn/Workspace/Embedding_AI/enrollment_service/models/crfiqa_s_quality_opset11.onnx"
-export DB_PATH="/srv/nfs/employee.db"
-```
-
-### 3. Serverni ishga tushirish
-```bash
-python main.py
-# yoki reload rejimi bilan:
-uvicorn main:app --host 0.0.0.0 --port 8000 --reload
+onnxruntime
+opencv-python-headless
+numpy
+scikit-image
 ```
 
 ---
 
-## 📲 Kameraga Hot-Reload Yuklash Tartibi
+## 🚀 Ishlatish
 
-Yaratilgan `employee.db` bazasini kameraga yuklab, uni tizimga qo'llash quyidagi sodda buyruqlar orqali amalga oshiriladi:
+### Rejim 1 — Bitta kishi (web backend har upload da chaqiradi)
 
-1.  **NFS papkaga bazani nusxalash (Server tomonda):**
-    ```bash
-    cp employee.db /srv/nfs/employee.db
-    ```
-2.  **Kamera telnet yoki SSH terminali orqali (Kamera tomonda):**
-    ```bash
-    # Yangi db faylini SD-kartaga ko'chirish va yuz tanish algoritmini restart qilish
-    cp /sdcard/nfs/employee.db /sdcard/employee.db && killall cv_alg
-    
-    # 1 soniya kutib, algoritm jarayonini orqa fonda qayta ishga tushirish
-    sleep 1
-    /opt/app/bin/cv_alg &
-    ```
+```bash
+python3 build_db.py \
+  --name "Ali Karimov" \
+  --photos /tmp/uploads/ali1.jpg /tmp/uploads/ali2.jpg \
+  --db /srv/nfs/client_001.db
+```
 
-3.  **Tekshirish:**
-    Kamera loglarida quyidagi yozuv paydo bo'ladi:
-    `ts=... lvl=SUCCESS src=EmployeeDB msg="Loaded DB: X entries"` (bu yerda `X` - ro'yxatga olingan jami xodimlar soni).
+**Konsol natijasi:**
+```
+[MODEL] SCRFD:   models/scrfd_10g_bnkps.onnx
+[MODEL] ArcFace: models/w600k_mbf.onnx
+[MODEL] CR-FIQA: models/crfiqa_s_quality_opset11.onnx
+
+[INFO] Kishi   : 'Ali Karimov'
+[INFO] Rasmlar : 2 ta
+[INFO] DB      : /srv/nfs/client_001.db
+
+  [OK]   /tmp/uploads/ali1.jpg  (quality=0.724)
+  [WARN] /tmp/uploads/ali2.jpg: Face is turned too far sideways (Yaw ratio: 0.41)
+
+[DONE] 'Ali Karimov': 1 embedding saqlandi, 1 rasm rad etildi
+[DB]   Jami: 1 kishi, 1 embedding, 28 KB
+```
 
 ---
 
-## 🎨 10-Bosqichli Vizual Debug Tizimi (Visual Pipeline Debugger)
+### Rejim 2 — Papkadan to'liq bazani qayta qurish (batch)
 
-Tizimga yuklanayotgan yuz rasmini har bir bosqich bo'yicha to'liq tahlil qilish uchun maxsus vizualizatsiya tizimi yaratildi. Skript yordamida rasmning qaysi filtrdan qanday o'tganini va embedding qanday shakllanganini to'liq ko'ra olasiz.
-
-### Skriptni ishga tushirish:
-```bash
-# default test rasmi bilan tekshirish:
-./debug_pipeline.py
-
-# Istalgan rasm bilan tekshirish:
-./debug_pipeline.py --image /path/to/photo.jpg --out-dir /path/to/debug_output
+Rasm tuzilmasi:
+```
+photos/
+├── Ali_Karimov/
+│   ├── 1.jpg
+│   └── 2.jpg
+└── Vali_Toshmatov/
+    └── front.jpg
 ```
 
-### 10 ta vizual qadamlar ro'yxati:
-Tekshirish yakunida belgilangan `debug_output/` papkasiga quyidagi 10 ta tahliliy rasm saqlanadi:
-1.  **`01_raw_input.jpg`**: Asl yuklangan rasm (original).
-2.  **`02_letterbox_input.jpg`**: SCRFD modeli uchun yuz proporsiyasini buzmasdan `640x640` o'lchamga o'tkazilgan va chetlari qora hoshiya (padding) qilingan tasvir.
-3.  **`03_detection_raw.jpg`**: Detektor aniqlagan barcha yuz nomzodlari va ularning xom ballari overlayi.
-4.  **`04_detection_filtered.jpg`**: NMSdan o'tgan eng ishonchli yuz va uning 5 ta biometrik tayanch nuqtalari (keypoints).
-5.  **`05_size_check.jpg`**: Yuz o'lchami minimal `min_face_size` chegara talabiga javob berishi (yashil - OK, qizil - rejected).
-6.  **`06_centrality_check.jpg`**: Yuz markazini tekshirish hududi (`0.25 - 0.75`) va yuz markaziy nuqtasi vizualizatsiyasi.
-7.  **`07_pose_check.jpg`**: Yuz burilishlarini tekshirish uchun o'ng/chap (Yaw) va tepa/past (Pitch) simmetriya o'qlari hamda hisoblangan nisbatlar.
-8.  **`08_umeyama_aligned.jpg`**: Umeyama affin almashtirishi yordamida standart `112x112` o'lchamga keltirilgan toza yuz chipi.
-9.  **`09_crfiqa_quality.jpg`**: CR-FIQA neyron tarmog'ining biometrik sifat baholash natijasi (yashil overlay - sifatli, qizil - yaroqsiz).
-10. **`10_final_arcface.jpg`**: Tayyor yuz chipi hamda uning yonida **512 o'lchamli ArcFace embedding vektorining dastlabki 64 ta qiymatini aks ettiruvchi premium bar-chart** vizualizatsiyasi paneli!
+> Papka nomi avtomatik ravishda xodim ismi sifatida ishlatiladi:
+> `Ali_Karimov` → `"Ali Karimov"`
 
+```bash
+python3 build_db.py \
+  --photos-dir ./photos/ \
+  --db /srv/nfs/client_001.db
+```
+
+**Konsol natijasi:**
+```
+[MODEL] SCRFD:   models/scrfd_10g_bnkps.onnx
+[MODEL] ArcFace: models/w600k_mbf.onnx
+[MODEL] CR-FIQA: models/crfiqa_s_quality_opset11.onnx
+
+[INFO] 2 ta kishi papkasi topildi | DB: /srv/nfs/client_001.db
+
+[INFO] Ali Karimov (2 ta rasm):
+  [OK]   photos/Ali_Karimov/1.jpg  (quality=0.724)
+  [OK]   photos/Ali_Karimov/2.jpg  (quality=0.681)
+
+[INFO] Vali Toshmatov (1 ta rasm):
+  [OK]   photos/Vali_Toshmatov/front.jpg  (quality=0.803)
+
+────────────────────────────────────────────────────────
+[DONE]  Tugadi!
+        2/2 kishi ro'yxatga olindi
+        3 embedding saqlandi, 0 rasm rad etildi
+[DB]    /srv/nfs/client_001.db  (56 KB)
+```
+
+---
+
+### Web backend integratsiyasi
+
+```python
+import subprocess
+
+result = subprocess.run(
+    [
+        "python3", "/opt/faceProject/build_db.py",
+        "--name",   "Ali Karimov",
+        "--photos", "/uploads/abc/photo1.jpg", "/uploads/abc/photo2.jpg",
+        "--db",     "/srv/nfs/client_001.db",
+    ],
+    capture_output=True,
+    text=True,
+)
+
+if result.returncode == 0:
+    # employee.db tayyor — web team kameraga yuboradi
+    print(result.stdout)
+else:
+    # Xatolik: hech qanday yuz saqlanmadi
+    print(result.stderr)
+```
+
+**Exit code:**
+| Holat | Kod |
+|---|---|
+| Muvaffaqiyatli | `0` |
+| Hech qanday embedding saqlanmadi | `1` |
+| Model / papka topilmadi | `1` |
+
+---
+
+## ⚡️ Ishlash Ko'rsatkichlari (1-to-N Benchmark)
+
+Agarda korxonada **10,000 nafar xodim** va **5 tadan yuz vektori (jami 50,000 ta embedding)** bo'lsa:
+
+| Ko'rsatkich | Server (Python + NumPy) | Kamera (CV25 NPU) |
+|---|---|---|
+| **1-to-N qidiruv** | 1.5 – 3.0 ms | 5 – 10 ms |
+| **RAM iste'moli** | ~110 MB | ~110 MB |
+
+$$\text{Hajm} = 50{,}000 \times 512 \times 4\ \text{bayt} \approx 97.66\ \text{MB}$$
+
+---
+
+## 🎨 10-Bosqichli Vizual Debug (ixtiyoriy)
+
+```bash
+python3 debug_pipeline.py --image /path/to/photo.jpg --out-dir ./debug_output
+```
+
+| # | Fayl | Nima ko'rsatiladi |
+|---|---|---|
+| 1 | `01_raw_input.jpg` | Asl rasm |
+| 2 | `02_letterbox_input.jpg` | SCRFD uchun 640×640 padding |
+| 3 | `03_detection_raw.jpg` | Barcha detektor nomzodlari |
+| 4 | `04_detection_filtered.jpg` | NMS o'tgan yuz + keypoints |
+| 5 | `05_size_check.jpg` | O'lcham filtri (yashil/qizil) |
+| 6 | `06_centrality_check.jpg` | Markaziylik zonasi |
+| 7 | `07_pose_check.jpg` | Yaw / Pitch simmetriya o'qlari |
+| 8 | `08_umeyama_aligned.jpg` | 112×112 aligned yuz chipi |
+| 9 | `09_crfiqa_quality.jpg` | CR-FIQA sifat bahosi |
+| 10 | `10_final_arcface.jpg` | ArcFace embedding vizualizatsiyasi |
+
+---
+
+## 📁 Fayl Tuzilmasi
+
+```
+faceProject/
+├── build_db.py          ← Asosiy skript (bu yerdan boshlang)
+├── pipeline.py          ← SCRFD + Align + ArcFace + Guards
+├── database.py          ← SQLite (CV25 bilan mutanosib schema)
+├── debug_pipeline.py    ← 10-bosqichli vizual debug (ixtiyoriy)
+├── requirements.txt     ← pip dependencies
+├── models/              ← ONNX modellar (avtomatik topiladi)
+│   ├── scrfd_10g_bnkps.onnx
+│   ├── w600k_mbf.onnx
+│   └── crfiqa_s_quality_opset11.onnx
+└── legacy/
+    └── main.py          ← Eski FastAPI server (arxiv)
+```

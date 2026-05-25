@@ -24,3 +24,6 @@ htmlcov/
 # debug_output/  ← removed: now tracked in git for demo purposes
 logs/
 *.log
+
+# ── Local scratch / one-off scripts ───────────────────────────────────────────
+scratch/
